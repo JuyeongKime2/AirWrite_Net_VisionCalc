@@ -1,0 +1,22 @@
+# ---- 가상환경 / 파이썬 캐시 ----
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# ---- 수집 데이터, MNIST 원본·사전학습 캐시 (GitHub에 올리지 않음) ----
+data/
+
+# ---- 학습 결과물 (리포트, 그래프) ----
+outputs/
+
+# ---- 비밀 키 ----
+.streamlit/secrets.toml
+
+# ---- OS / 편집기 ----
+.DS_Store
+Thumbs.db
+*.swp
+
+# models/ 폴더(cnn.pt, gru.pt, ensemble.json)는 올립니다. 배포한 앱이 이 파일을 읽습니다.

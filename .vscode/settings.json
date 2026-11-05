@@ -1,0 +1,15 @@
+{
+  "python.terminal.activateEnvironment": true,
+  "files.encoding": "utf8",
+  "files.exclude": {
+    "**/__pycache__": true
+  },
+  "search.exclude": {
+    "data/**": true,
+    "outputs/**": true,
+    ".venv/**": true
+  },
+  "[python]": {
+    "editor.rulers": [120]
+  }
+}

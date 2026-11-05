@@ -1,0 +1,17 @@
+# ------------------------------------------------------------
+# 앱 실행용 (Streamlit Community Cloud가 이 파일을 읽어 설치)
+# 데이터 수집/학습까지 하려면 requirements-dev.txt를 설치하세요.
+# ------------------------------------------------------------
+
+# PyTorch를 CPU 전용으로 설치 (GPU판은 용량이 커서 클라우드 설치가 실패하거나 느림)
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# MediaPipe: 0.10.30 무렵부터 mp.solutions(이 프로젝트가 쓰는 Hands)이 제거됨 -> 반드시 고정
+# 0.10.21은 protobuf 5 이상, numpy 2 이상과 같이 쓰면 오류가 나므로 함께 고정
+mediapipe==0.10.21
+protobuf>=4.25.3,<5
+numpy>=1.26,<2
+
+torch>=2.2,<2.7
+streamlit>=1.40,<2
+streamlit-webrtc>=0.47

@@ -1,0 +1,67 @@
+{
+  // VS Code 왼쪽 '실행 및 디버그'(Ctrl+Shift+D)에서 골라 ▶ 로 실행합니다.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "1. 데이터 수집 (학습용 세션)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/collect_data.py",
+      "args": ["--note", "${input:note}"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "1-1. 데이터 수집 (확인용 세션, 학습에 안 씀)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/collect_data.py",
+      "args": ["--note", "${input:note}", "--holdout"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "2. 학습 (MNIST 사전학습 CNN + GRU + 앙상블)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/train.py",
+      "args": [],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "2-1. 학습 + 사전학습 효과 비교 (--ablation)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/train.py",
+      "args": ["--ablation"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "3. 확인용 세션으로 최종 평가",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/evaluate_holdout.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "4. 앱 실행 (Streamlit)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "streamlit",
+      "args": ["run", "app.py"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "note",
+      "type": "promptString",
+      "description": "촬영 조건 메모 (예: 책상 앞 밝음, 서서 1.5m)",
+      "default": ""
+    }
+  ]
+}

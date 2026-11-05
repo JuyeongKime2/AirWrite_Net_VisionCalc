@@ -1,0 +1,29 @@
+{
+  "seq": "early_transformer.pt",
+  "encoder": "transformer",
+  "cnn": "early_cnn.pt",
+  "cnn_weight": 0.75,
+  "classes": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "plus",
+    "minus",
+    "times",
+    "divide",
+    "equals"
+  ],
+  "feature_version": 1,
+  "evaluation_protocol": "session",
+  "cv_folds": 4,
+  "trained_at": "2026-11-06T02:06:53",
+  "ensemble_seq_encoder_in_cv": "gru",
+  "cv_summary_path": "outputs\\early\\early_summary.json"
+}

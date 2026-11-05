@@ -20,3 +20,6 @@ Thumbs.db
 *.swp
 
 # models/ 폴더(cnn.pt, gru.pt, ensemble.json)는 올립니다. 배포한 앱이 이 파일을 읽습니다.
+
+# ---- 터미널 로그 (로컬 경로 포함) ----
+terminal.txt

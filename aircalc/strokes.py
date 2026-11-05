@@ -9,6 +9,7 @@
     render_image      획 -> 28x28 이미지 (CNN 입력, MNIST와 같은 형식)
     seq_features      획 -> 64x6 시퀀스 (GRU 입력: 위치, 진행 방향, 획 시작 표시, 진행률)
     augment           학습용 변형 (회전, 기울임, 떨림 ...)
+    truncate          앞부분만 남기기 (조기 예측: '여기까지 썼을 때')
     synth_operator    합성 연산자 (MNIST에 연산자가 없어서 보충)
 """
 
@@ -19,9 +20,11 @@ from .config import (
     CLASSES,
     DOT_LENGTH,
     FIST_HOLD_SECONDS,
+    GESTURE_RELEASE_FRAMES,
     GESTURE_STABLE_FRAMES,
     IMAGE_INNER,
     IMAGE_SIZE,
+    PREFIX_MIN,
     RENDER_SCALE,
     SEQ_POINTS,
     STROKE_THICKNESS,
@@ -47,16 +50,17 @@ class AirWriter:
         self.current = None
         self.gesture = "none"
         self._candidate, self._candidate_count = "none", 0
+        self._off_count = 0
         self._tip = None
         self._confirm_latched = False
         self._fist_start, self._fist_fired = None, False
+        self._muted = False     # 자동 입력 직후: 검지만 편 상태가 끝날 때까지 쓰는 것을 무시
 
     # ---------------- 내부 ----------------
     def _end_stroke(self):
         if self.current:
-            # 손 모양이 바뀌는 동안(안정화 프레임) 찍힌 꼬리를 잘라낸다
-            trim = max(0, GESTURE_STABLE_FRAMES - 1)
-            points = self.current[:-trim] if len(self.current) > trim + 1 else self.current[:1]
+            # 손가락을 바꾸는 순간 찍힌 마지막 점 1개(꼬리)를 잘라낸다
+            points = self.current[:-1] if len(self.current) > 2 else self.current[:1]
             self.strokes.append(np.asarray(points, np.float32))
         self.current = None
 
@@ -65,6 +69,13 @@ class AirWriter:
             self._candidate_count += 1
         else:
             self._candidate, self._candidate_count = raw, 1
+        # 쓰는 중이면: 검지만 편 모양이 아닌 프레임이 연속 2번이면 바로 멈춤
+        # (V, 손바닥, 주먹 무엇이든 상관없이 셈 -> 손 모양이 흔들려도 획이 확실히 끊김)
+        if self.gesture == "draw":
+            self._off_count = self._off_count + 1 if raw != "draw" else 0
+            if self._off_count >= GESTURE_RELEASE_FRAMES:
+                self.gesture, self._off_count = raw, 0
+            return self.gesture
         if self._candidate_count >= GESTURE_STABLE_FRAMES:
             self.gesture = self._candidate
         return self.gesture
@@ -74,17 +85,23 @@ class AirWriter:
         if hand is None:
             self._end_stroke()
             self.gesture, self._candidate, self._candidate_count = "none", "none", 0
+            self._off_count = 0                      # ← 추가
             self._tip = None
+            self._muted = False
             return None
 
-        gesture = self._stable_gesture(classify_gesture(finger_states(hand, aspect)))
+        raw = classify_gesture(finger_states(hand, aspect))     # ← 이 두 줄로
+        gesture = self._stable_gesture(raw)                     #    기존 gesture = ... 한 줄 교체
         tip = np.array([hand[INDEX_TIP, 0] * aspect, hand[INDEX_TIP, 1]], np.float32)
         self._tip = tip if self._tip is None else TIP_SMOOTHING * tip + (1 - TIP_SMOOTHING) * self._tip
 
-        if gesture == "draw":
+        if self._muted and gesture != "draw":
+            self._muted = False
+        if gesture == "draw" and not self._muted:
             if self.current is None:
                 self.current = []
-            self.current.append((t, float(self._tip[0]), float(self._tip[1])))
+            if raw == "draw":           # ← 추가: 손 모양이 흔들린 프레임은 점을 찍지 않음
+                self.current.append((t, float(self._tip[0]), float(self._tip[1])))
         else:
             self._end_stroke()
 
@@ -117,6 +134,12 @@ class AirWriter:
 
     def clear(self):
         self.strokes, self.current = [], None
+        self._muted = False
+
+    def suspend(self):
+        """조기 예측으로 자동 입력한 직후: 쓰던 획을 버리고, 손 모양이 바뀔 때까지 남은 움직임을 무시."""
+        self.strokes, self.current = [], None
+        self._muted = self.gesture == "draw"
 
     def visible_strokes(self):
         """화면에 그릴 획 (쓰는 중인 획 포함)."""
@@ -232,6 +255,48 @@ def seq_features(strokes, n=SEQ_POINTS):
 
 
 # ============================================================
+# 조기 예측: 앞부분만 남기기
+# ============================================================
+def truncate(strokes, frac):
+    """쓴 순서대로 잉크(획 길이) 기준 앞쪽 frac만 남긴다. frac=0.5 -> 전체 길이의 절반까지 쓴 상태."""
+    strokes = [np.asarray(s, np.float32) for s in strokes if len(s)]
+    if frac >= 1:
+        return strokes
+    lengths = [_length(s[:, -2:]) for s in strokes]
+    budget = frac * sum(lengths)
+    out = []
+    for s, length in zip(strokes, lengths):
+        if length <= budget:                          # 이 획은 다 씀
+            out.append(s)
+            budget -= length
+            continue
+        seg = np.linalg.norm(np.diff(s[:, -2:], axis=0), axis=1)
+        cum = np.r_[0, np.cumsum(seg)]
+        k = int(np.searchsorted(cum, budget, side="right"))       # cum <= budget 인 점 개수
+        part = s[:k]
+        if 0 < k < len(s) and cum[k] > cum[k - 1]:                 # 마지막 점은 선분 위에서 보간
+            a = (budget - cum[k - 1]) / (cum[k] - cum[k - 1])
+            part = np.vstack([part, s[k - 1] + a * (s[k] - s[k - 1])])
+        if len(part) >= 2:                                         # 점 1개짜리는 '점'으로 보이므로 버림
+            out.append(part.astype(np.float32))
+        break
+    return out or [strokes[0][:2]]
+
+
+def random_prefix(strokes, rng, min_frac=PREFIX_MIN):
+    """학습용: 무작위 비율로 앞부분만 남긴다. 단, 마지막 획은 일부라도 남긴다.
+    (+ 의 가로획만 남기면 − 와 똑같아져서, 진짜 − 까지 + 로 배우게 되는 것을 막음)"""
+    lengths = [_length(np.asarray(s, np.float32)[:, -2:]) for s in strokes if len(s)]
+    total = sum(lengths)
+    if total <= 0:
+        return strokes
+    lo = max(min_frac, sum(lengths[:-1]) / total + 0.05)
+    if lo >= 1:
+        return strokes
+    return truncate(strokes, rng.uniform(lo, 1.0))
+
+
+# ============================================================
 # 증강 (학습 때만)
 # ============================================================
 def augment(strokes, rng, rot_deg=12.0, shear=0.15, aspect=(0.85, 1.15), jitter=0.012, stroke_shift=0.04):
@@ -272,12 +337,12 @@ def _dot(center, rng):
     return (np.asarray(center, np.float32) + rng.normal(0, 0.015, (n, 2))).astype(np.float32)
 
 
-def synth_operator(name, rng):
+def synth_operator(name, rng, reverse_prob=0.1, order_random=True):
     j = lambda: rng.uniform(-0.12, 0.12)  # noqa: E731
     if name == "plus":
         h = _line((-1 + j(), j()), (1 + j(), j()), rng)
         v = _line((j(), -1 + j()), (j(), 1 + j()), rng)
-        strokes = [h, v] if rng.random() < 0.8 else [v, h]
+        strokes = [h, v] if not order_random or rng.random() < 0.8 else [v, h]
     elif name == "minus":
         strokes = [_line((-1, j() * 0.5), (1, j() * 0.5), rng)]
     elif name == "times":
@@ -287,14 +352,14 @@ def synth_operator(name, rng):
         gap = rng.uniform(0.45, 0.8)
         line = _line((-1, j() * 0.3), (1, j() * 0.3), rng)
         dots = [_dot((j(), -gap), rng), _dot((j(), gap), rng)]
-        strokes = [line] + dots if rng.random() < 0.7 else [dots[0], line, dots[1]]
+        strokes = [line] + dots if not order_random or rng.random() < 0.7 else [dots[0], line, dots[1]]
     elif name == "equals":
         gap = rng.uniform(0.25, 0.55)
         strokes = [_line((-1 + j(), -gap), (1 + j(), -gap + j() * 0.3), rng),
                    _line((-1 + j(), gap), (1 + j(), gap + j() * 0.3), rng)]
     else:
         raise ValueError(name)
-    strokes = [s[::-1] if rng.random() < 0.1 else s for s in strokes]      # 가끔 반대 방향으로 긋기
+    strokes = [s[::-1] if rng.random() < reverse_prob else s for s in strokes]   # 가끔 반대 방향으로 긋기
     t0 = 0.0
     out = []
     for s in strokes:                                                       # [t, x, y] 형식으로

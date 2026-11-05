@@ -35,6 +35,7 @@ import time
 from datetime import datetime
 
 import cv2
+import numpy as np
 
 from aircalc.config import (
     ASCII,
@@ -46,11 +47,38 @@ from aircalc.config import (
     WRITING_GUIDE,
 )
 from aircalc.drawing import FaceMosaic, draw_hand, draw_status_bar, draw_strokes, trajectory_preview
-from aircalc.hand_tracking import HandTracker, open_camera
-from aircalc.strokes import FEATURE_VERSION, AirWriter, save_sample
+from aircalc.hand_tracking import HandTracker, finger_states, open_camera
+from aircalc.strokes import FEATURE_VERSION, AirWriter, save_sample, synth_operator
 
 MIN_POINTS = 5
 MAX_STROKES = 6
+
+# 연산자 예시 그림 (획 순서별 색, 빈 원 = 시작점). 숫자는 평소 쓰는 대로 쓰면 되므로 예시 없음
+EXAMPLES = {op: trajectory_preview(synth_operator(op, np.random.default_rng(7), reverse_prob=0.0,
+                                                  order_random=False))[:, :160]
+            for op in WRITING_GUIDE}
+GUIDE_EN = {"plus": "1:-  2:|", "minus": "1:-", "times": "1:\\  2:/", "divide": "1:-  2:.  3:.", "equals": "1:-  2:-"}
+
+
+def draw_target(view, target):
+    h, w = view.shape[:2]
+    x0 = w - 140
+    cv2.rectangle(view, (x0, 48), (w - 8, 172), (30, 30, 30), -1)
+    cv2.putText(view, "WRITE", (x0 + 18, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
+    if target == "divide":      # cv2 글꼴에 ÷가 없어서 직접 그림 ('/'로 보이면 헷갈림)
+        cx = x0 + 66
+        cv2.line(view, (cx - 32, 120), (cx + 32, 120), (40, 230, 255), 6, cv2.LINE_AA)
+        cv2.circle(view, (cx, 98), 6, (40, 230, 255), -1, cv2.LINE_AA)
+        cv2.circle(view, (cx, 142), 6, (40, 230, 255), -1, cv2.LINE_AA)
+    else:
+        cv2.putText(view, ASCII[target], (x0 + 32, 150), cv2.FONT_HERSHEY_SIMPLEX, 2.6, (40, 230, 255), 5,
+                    cv2.LINE_AA)
+    if target in EXAMPLES:
+        ex = cv2.resize(EXAMPLES[target], (132, 132), interpolation=cv2.INTER_AREA)
+        view[178:310, x0:x0 + 132] = ex
+        cv2.rectangle(view, (x0, 178), (x0 + 132, 310), (40, 230, 255), 2)
+        cv2.putText(view, GUIDE_EN[target], (x0, 330), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (40, 230, 255), 2, cv2.LINE_AA)
+    return view
 
 
 def build_queue(rounds, seed):
@@ -181,15 +209,13 @@ def main():
             draw_strokes(view, writer.visible_strokes(), aspect)
             draw_hand(view, hand, writer.gesture)
             draw_status_bar(view, writer.gesture, f"{total - len(queue)}/{total}")
-            if queue:
-                h, w = view.shape[:2]
-                sym = ASCII[queue[0]]
-                cv2.rectangle(view, (w - 130, 50), (w - 10, 170), (30, 30, 30), -1)
-                cv2.putText(view, "WRITE", (w - 112, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
-                cv2.putText(view, sym, (w - 98, 150), cv2.FONT_HERSHEY_SIMPLEX, 2.6, (40, 230, 255), 5, cv2.LINE_AA)
-                if queue[0] in WRITING_GUIDE:
-                    cv2.putText(view, queue[0], (w - 125, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (40, 230, 255), 1,
-                                cv2.LINE_AA)
+            if hand is not None:        # 손가락 인식 상태: 대문자 = 편 손가락
+                fs = finger_states(hand, aspect)
+                fingers = " ".join(k[0].upper() if fs[k] else "." for k in ("index", "middle", "ring", "pinky"))
+                cv2.putText(view, f"fingers: {fingers}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
+                            cv2.LINE_AA)
+            if queue:                   # 오른쪽 위: 써야 할 기호 + (연산자는) 획 순서 예시
+                draw_target(view, queue[0])
             if message:
                 cv2.putText(view, message, (10, view.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2,
                             cv2.LINE_AA)

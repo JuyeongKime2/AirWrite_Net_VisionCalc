@@ -21,7 +21,15 @@ try:
 except ImportError:
     VideoProcessorBase = object
 
-from aircalc.config import CAMERA_CONSTRAINTS, MODEL_DIR, SYMBOL, WRITING_GUIDE
+from aircalc.config import (
+    CAMERA_CONSTRAINTS,
+    EARLY_AUTO_CONFIDENCE,
+    EARLY_AUTO_DEFAULT,
+    EARLY_NO_AUTO,
+    MODEL_DIR,
+    SYMBOL,
+    WRITING_GUIDE,
+)
 from aircalc.drawing import FaceMosaic, draw_hand, draw_status_bar, draw_strokes
 from aircalc.hand_tracking import HandTracker
 from aircalc.recognizer import AirCalculatorSession, SymbolRecognizer
@@ -89,15 +97,24 @@ class AirCalcProcessor(VideoProcessorBase):
             strokes = self.session.writer.visible_strokes()
             gesture = self.session.writer.gesture
             display = self.session.calc.display().translate(TO_ASCII)
+            live = self.session.live
         view = self.face(img)
         draw_strokes(view, strokes, aspect)
         draw_hand(view, hand, gesture)
         draw_status_bar(view, gesture, display[-28:])
+        if live:                                        # 조기 예측: 쓰는 중 예상 기호
+            text = f"guess: {SYMBOL[live['label']].translate(TO_ASCII)} {live['confidence']:.0%}"
+            cv2.putText(view, text, (10, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 4, cv2.LINE_AA)
+            cv2.putText(view, text, (10, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (40, 230, 255), 2, cv2.LINE_AA)
         return av.VideoFrame.from_ndarray(view, format="bgr24")
 
     def snapshot(self):
         with self._lock:
             return self.session.snapshot()
+
+    def set_auto(self, on):
+        with self._lock:
+            self.session.auto_commit = bool(on)
 
     def backspace(self):
         with self._lock:
@@ -141,7 +158,12 @@ with left:
         )
 
 with right:
+    auto = st.toggle("다 쓰기 전에 자동 입력 (조기 예측)", value=EARLY_AUTO_DEFAULT,
+                     help=f"쓰는 도중 확신도가 {EARLY_AUTO_CONFIDENCE:.0%} 이상으로 안정되면 손바닥 없이 바로 입력합니다. "
+                          f"{', '.join(SYMBOL[c] for c in EARLY_NO_AUTO)} 는 다른 기호의 첫 획과 같아서 끝까지 써야 합니다. "
+                          "자동 입력 뒤에는 손 모양을 바꾼 다음 다음 글자를 쓰세요.")
     expr_area = st.empty()
+    live_area = st.empty()
     notice_area = st.empty()
     last_area = st.empty()
     b1, b2 = st.columns(2)
@@ -156,6 +178,11 @@ def render(snap):
     expr_area.markdown(f"<div style='font-size:2.6rem;font-weight:700;text-align:right;padding:12px 16px;"
                        f"border:1px solid rgba(128,128,128,.35);border-radius:12px;word-break:break-all'>"
                        f"{snap['display']}</div>", unsafe_allow_html=True)
+    live = snap.get("live")
+    if live:
+        live_area.markdown(f"✍️ 쓰는 중 예상: **{SYMBOL[live['label']]}** ({live['confidence']:.0%})")
+    else:
+        live_area.empty()
     notice_area.info(snap["notice"])
     last = snap["last"]
     if last:
@@ -169,6 +196,7 @@ def render(snap):
 if ctx.state.playing:
     while ctx.state.playing:
         if ctx.video_processor is not None:
+            ctx.video_processor.set_auto(auto)
             render(ctx.video_processor.snapshot())
         time.sleep(0.15)
 else:

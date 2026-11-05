@@ -23,15 +23,16 @@ def finger_states(hand, aspect):
     펴짐 = 가운데 마디(PIP) 각도가 충분히 곧고, 손끝이 가운데 마디보다 손목에서 멀다.
     각도를 쓰므로 손을 기울여도 판별이 유지된다.
     """
-    pts = np.asarray(hand, dtype=np.float32)[:, :2].copy()
+    pts = np.asarray(hand, dtype=np.float32).copy()
     pts[:, 0] *= aspect
+    pts[:, 2] *= aspect          # 깊이(z)도 같이 써서 손이 기울어도 각도가 덜 왜곡됨
     wrist = pts[0]
     states = {}
     for name, (mcp, pip, _dip, tip) in FINGERS.items():
         v1, v2 = pts[mcp] - pts[pip], pts[tip] - pts[pip]
         cos = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6))
         angle = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
-        farther = np.linalg.norm(pts[tip] - wrist) > np.linalg.norm(pts[pip] - wrist) * 1.05
+        farther = np.linalg.norm(pts[tip] - wrist) > np.linalg.norm(pts[pip] - wrist)
         states[name] = bool(angle > FINGER_EXTENDED_ANGLE and farther)
     return states
 
@@ -51,7 +52,7 @@ def classify_gesture(states):
 
 
 class HandTracker:
-    def __init__(self, min_detection_confidence=0.6, min_tracking_confidence=0.5):
+    def __init__(self, min_detection_confidence=0.5, min_tracking_confidence=0.5):
         try:
             import mediapipe as mp
         except ImportError as exc:  # pragma: no cover

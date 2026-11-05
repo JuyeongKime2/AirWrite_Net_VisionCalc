@@ -38,8 +38,9 @@ WRITING_GUIDE = {
 # ------------------------------------------------------------
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
-GESTURE_STABLE_FRAMES = 3       # 손 모양이 이 프레임 수만큼 유지돼야 바뀐 것으로 인정
-FINGER_EXTENDED_ANGLE = 150.0   # 손가락 가운데 마디 각도가 이보다 크면 '편 손가락'
+GESTURE_STABLE_FRAMES = 3       # 쓰기 '시작': 손 모양이 이 프레임 수만큼 유지돼야 인정
+GESTURE_RELEASE_FRAMES = 2      # 쓰기 '멈춤': 검지만 편 모양이 아닌 프레임이 이만큼이면 바로 획을 끊음
+FINGER_EXTENDED_ANGLE = 140.0   # 손가락 가운데 마디 각도가 이보다 크면 '편 손가락'
 FIST_HOLD_SECONDS = 0.6
 TIP_SMOOTHING = 0.5             # 검지 끝 위치 떨림 보정 (0~1, 클수록 원래 위치에 가까움)
 DOT_LENGTH = 0.08               # 정규화 후 이보다 짧은 획은 '점'으로 그림 (÷의 점)
@@ -76,7 +77,37 @@ SYNTHETIC_PER_OPERATOR = 120    # 학습 fold에만 섞는 합성 연산자 수 
 ENSEMBLE_WEIGHTS = [0.0, 0.25, 0.5, 0.75, 1.0]   # CNN 가중치 후보 (나머지는 GRU)
 
 # ------------------------------------------------------------
+# 조기 예측 (다 쓰기 전에 어떤 기호인지 맞히기)
+#   '쓴 비율' = 잉크(획 길이) 기준. 50% = 전체 획 길이의 앞쪽 절반만 쓴 상태
+# ------------------------------------------------------------
+PREFIX_TRAIN_PROB = 0.3         # 학습 때 이 확률로 궤적의 앞부분만 보여줌 (부분만 보고도 맞히도록)
+PREFIX_MIN = 0.25               # 앞부분만 보여줄 때 최소 비율
+EARLY_FRACTIONS = [0.25, 0.5, 0.75, 1.0]   # 평가할 '쓴 비율'
+EARLY_AUTO_CONFIDENCE = 0.90    # 앱에서 이 확신도 이상이면 손바닥 없이 자동 입력 (켰을 때만)
+EARLY_STABLE_PREDICTIONS = 3    # 자동 입력: 같은 예측이 이만큼 연속으로 나와야 함
+EARLY_NO_AUTO = ["minus", "1"]  # 다른 기호의 첫 획과 모양이 같아 자동 입력하지 않음 (− 는 + = ÷ 의 첫 획)
+EARLY_MIN_POINTS = 8            # 이보다 점이 적으면 예측하지 않음
+EARLY_INTERVAL = 0.15           # 쓰는 중 예측 간격 (초)
+EARLY_AUTO_DEFAULT = False      # 앱 시작 시 자동 입력 켜짐 여부
+
+# ------------------------------------------------------------
 # 앱
 # ------------------------------------------------------------
 MIN_CONFIDENCE = 0.50           # 이보다 낮으면 입력하지 않고 "다시 써 주세요"
 CAMERA_CONSTRAINTS = {"width": {"ideal": FRAME_WIDTH}, "height": {"ideal": FRAME_HEIGHT}, "frameRate": {"ideal": 30}}
+
+# ------------------------------------------------------------
+# 조기 예측 (글자를 다 쓰기 전에 기호와 나머지 궤적을 예측)
+# ------------------------------------------------------------
+EARLY_POINTS = 32
+COMPLETE_POINTS = 48
+ABS_SCALE = 0.25
+EVAL_FRACTIONS = (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+EARLY_ENCODERS = ["gru", "lstm", "tcn", "transformer"]
+EARLY_HP = {"hidden": 96, "dropout": 0.2, "lr": 2e-3, "weight_decay": 1e-4,
+            "coord_weight": 1.0, "start_weight": 0.2}
+EARLY_EPOCHS = 40
+EARLY_LIVE_EVERY = 4
+EARLY_AUTO_CONFIRM = False
+EARLY_AUTO_THRESHOLD = 0.92
+EARLY_AUTO_STABLE = 6

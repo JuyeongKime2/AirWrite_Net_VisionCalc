@@ -26,6 +26,9 @@ MediaPipe Hands ── 사전학습 딥러닝: 손 관절 21개 위치
 - **합성 데이터**: 연산자는 MNIST에 없어서, 프로그램으로 만든 연산자 궤적을 학습에 섞습니다.
 - **앙상블**: 모양만 보는 CNN과 순서만 보는 GRU가 서로의 약점을 보완합니다.
 - 학습 결과에서 CNN 단독 / GRU 단독 / 앙상블 점수를 비교해 볼 수 있습니다.
+- **조기 예측**: 다 쓰기 전에 어떤 기호인지 맞힙니다. 학습 때 궤적의 앞부분만 잘라서도 보여주고,
+  평가 때 25% · 50% · 75% · 100%까지만 쓴 궤적으로 채점해 '얼마나 썼을 때 얼마나 맞히는지' 곡선을 그립니다.
+  앱에서는 쓰는 도중 예상 기호가 뜨고, 켜면 확신도가 높을 때 손바닥 없이 자동 입력됩니다.
 
 ---
 
@@ -152,6 +155,7 @@ VS Code 왼쪽 **실행 및 디버그**(`Ctrl+Shift+D`)에서 1~4번 메뉴를 �
 ```bash
 python scripts/train.py              # 처음 실행 시 MNIST를 내려받아 CNN 사전학습 (몇 분, 한 번만)
 python scripts/train.py --ablation   # MNIST 사전학습 효과 비교 (발표 자료용)
+python scripts/train.py --no-prefix  # 앞부분 잘라 학습하기 없이 (조기 예측 효과 비교용)
 python scripts/evaluate_holdout.py   # 확인용 세션 최종 점수
 ```
 
@@ -161,8 +165,14 @@ python scripts/evaluate_holdout.py   # 확인용 세션 최종 점수
 | `holdout_samples.html` | 확인용 세션 결과 (가장 믿을 만한 점수) |
 | `model_comparison.png/csv` | CNN vs GRU vs 앙상블 |
 | `confusion_matrix.png` | 어떤 기호끼리 헷갈리는지 |
+| `early_prediction.png/csv` | **조기 예측**: 25~100% 썼을 때 모델별 정확도 (전체 / 숫자 / 연산자), 자동 입력 비율과 그 정확도 |
+| `holdout_early_prediction.png/csv` | 확인용 세션의 조기 예측 곡선 |
 
 학습된 모델은 `models/cnn.pt`, `models/gru.pt`, `models/ensemble.json`에 저장됩니다.
+
+**조기 예측 읽는 법**: '쓴 비율'은 획 길이 기준입니다 (50% = 전체 획 길이의 앞쪽 절반).
+연산자는 앞부분만 보면 구별이 원래 불가능한 경우가 많습니다 (+ · = · ÷ 의 첫 획은 모두 − 와 같음).
+그래서 연산자 곡선은 낮게 시작하는 것이 정상이고, 앱의 자동 입력도 − 와 1 은 하지 않습니다 (`config.py`의 `EARLY_NO_AUTO`).
 
 ---
 

@@ -3,7 +3,8 @@
 학습에 전혀 쓰지 않은 data/holdout 세션으로 저장된 모델(models/)을 채점한다.
 
 실행:   python scripts/evaluate_holdout.py
-결과:   outputs/holdout_samples.html, outputs/holdout_confusion_matrix.png
+결과:   outputs/holdout_samples.html, outputs/holdout_confusion_matrix.png,
+        outputs/holdout_early_prediction.png/csv (조기 예측: 얼마나 썼을 때 얼마나 맞히는지)
 """
 
 import sys
@@ -19,7 +20,17 @@ from aircalc.config import CLASSES, HOLDOUT_DIR, MODEL_DIR, OUTPUT_DIR
 from aircalc.models import ensemble
 from aircalc.recognizer import SymbolRecognizer
 from aircalc.report import build_report
-from train import compute_metrics, load_dataset, plot_confusion, precompute, predict_proba
+from train import (
+    compute_metrics,
+    early_scores,
+    load_dataset,
+    plot_confusion,
+    precompute,
+    predict_proba,
+    print_early,
+    save_early,
+    summarize_early,
+)
 from sklearn.metrics import confusion_matrix
 
 
@@ -58,7 +69,13 @@ def main():
     page = build_report(OUTPUT_DIR / "holdout_samples.html", "확인용 세션", "holdout", [fold], records, strokes, summary)
     plot_confusion(confusion_matrix(y, pred, labels=list(range(len(CLASSES)))), "Ensemble (holdout)",
                    OUTPUT_DIR / "holdout_confusion_matrix.png")
-    (OUTPUT_DIR / "holdout_summary.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    early = early_scores({"cnn": ("cnn", rec.cnn), "gru": ("gru", rec.gru)}, rec.weight, strokes, y)
+    early_summary = summarize_early({n: {f: [m] for f, m in by.items()} for n, by in early.items()})
+    save_early(early_summary, "Early prediction (holdout)", OUTPUT_DIR / "holdout_early_prediction.png",
+               OUTPUT_DIR / "holdout_early_prediction.csv")
+    (OUTPUT_DIR / "holdout_summary.json").write_text(json.dumps(
+        {**metrics, "early_prediction": {n: {str(f): m for f, m in by.items()} for n, by in early.items()}},
+        ensure_ascii=False, indent=2), encoding="utf-8")
 
     cv = rec.info.get("cv_summary", {}).get("ensemble", {})
     for name, m in metrics.items():
@@ -69,6 +86,8 @@ def main():
         if gap > 0.10:
             print("[참고] 확인용 점수가 0.1 이상 낮습니다. 확인용 세션의 조건(조명, 거리, 글씨 크기 등)이 "
                   "학습 세션에 없었을 수 있습니다. 그 조건으로 학습 세션을 더 찍어 보세요.")
+    print()
+    print_early(early_summary)
     print(f"확인 페이지: {page}")
 
 

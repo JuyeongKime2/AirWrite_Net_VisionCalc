@@ -4,6 +4,7 @@
     python scripts/train.py                 # MNIST 사전학습 CNN + GRU + 앙상블
     python scripts/train.py --ablation      # 'MNIST 사전학습 없는 CNN'도 같이 학습해 사전학습 효과 비교
     python scripts/train.py --no-synthetic  # 합성 연산자 없이 (효과 비교용)
+    python scripts/train.py --no-prefix     # 앞부분 잘라 학습하기 없이 (조기 예측 효과 비교용)
     python scripts/train.py --verbose
 
 순서
@@ -12,8 +13,10 @@
          학습 세션(+합성 연산자)으로 CNN 미세조정, GRU 학습
          검증 세션으로 학습 중단 시점과 앙상블 비중(CNN : GRU) 결정
          시험 세션으로 CNN / GRU / 앙상블 각각 채점
+         조기 예측: 시험 궤적을 25%, 50%, 75%, 100%까지만 쓴 것으로 잘라 다시 채점
     3. 전체 데이터로 최종 모델 학습 -> models/cnn.pt, models/gru.pt, models/ensemble.json
     4. outputs/test_samples.html: 시험에 쓰인 글씨마다 궤적, 정답, 세 모델의 예측
+       outputs/early_prediction.png/csv: '얼마나 썼을 때 얼마나 맞히는지' 곡선
 """
 
 import sys
@@ -47,6 +50,9 @@ from aircalc.config import (  # noqa: E402
     CNN_HP,
     CV_FOLDS,
     DIGITS,
+    EARLY_AUTO_CONFIDENCE,
+    EARLY_FRACTIONS,
+    EARLY_NO_AUTO,
     ENSEMBLE_WEIGHTS,
     EPOCHS,
     LABEL_SMOOTHING,
@@ -58,6 +64,7 @@ from aircalc.config import (  # noqa: E402
     OPERATORS,
     OUTPUT_DIR,
     PATIENCE,
+    PREFIX_TRAIN_PROB,
     PRETRAIN_DIR,
     RANDOM_SEED,
     SEQ_HP,
@@ -66,12 +73,22 @@ from aircalc.config import (  # noqa: E402
 )
 from aircalc.models import build_model, ensemble, save_checkpoint  # noqa: E402
 from aircalc.report import build_report  # noqa: E402
-from aircalc.strokes import FEATURE_VERSION, augment, load_sample, render_image, seq_features, synth_operator  # noqa: E402
+from aircalc.strokes import (  # noqa: E402
+    FEATURE_VERSION,
+    augment,
+    load_sample,
+    random_prefix,
+    render_image,
+    seq_features,
+    synth_operator,
+    truncate,
+)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CLASS_INDEX = {c: i for i, c in enumerate(CLASSES)}
 DIGIT_IDX = [CLASS_INDEX[d] for d in DIGITS]
 OP_IDX = [CLASS_INDEX[o] for o in OPERATORS]
+NO_AUTO_IDX = [CLASS_INDEX[c] for c in EARLY_NO_AUTO]
 HP = {"cnn": CNN_HP, "gru": SEQ_HP}
 
 
@@ -208,15 +225,19 @@ def precompute(kind, strokes_list):
 
 
 class StrokeDataset(Dataset):
-    def __init__(self, strokes_list, labels, kind, seed):
+    def __init__(self, strokes_list, labels, kind, seed, prefix_prob=0.0):
         self.strokes, self.labels, self.kind = strokes_list, labels, kind
         self.rng = np.random.default_rng(seed)
+        self.prefix_prob = prefix_prob
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, i):
-        x = to_input(self.kind, augment(self.strokes[i], self.rng))
+        s = self.strokes[i]
+        if self.prefix_prob and self.rng.random() < self.prefix_prob:   # 조기 예측: 앞부분만 보고도 맞히도록
+            s = random_prefix(s, self.rng)
+        x = to_input(self.kind, augment(s, self.rng))
         return torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)), int(self.labels[i])
 
 
@@ -281,7 +302,7 @@ def predict_proba(model, X, batch=256):
     return np.concatenate(out)
 
 
-def fit(kind, strokes, labels, val_X, val_y, epochs, seed, pretrained=None, verbose=False):
+def fit(kind, strokes, labels, val_X, val_y, epochs, seed, pretrained=None, verbose=False, prefix_prob=0.0):
     set_seed(seed)
     hp = HP[kind]
     kwargs = {k: hp[k] for k in ("hidden", "dropout") if k in hp}
@@ -290,7 +311,7 @@ def fit(kind, strokes, labels, val_X, val_y, epochs, seed, pretrained=None, verb
         model.load_pretrained(pretrained, keep_rows={CLASS_INDEX[d]: int(d) for d in DIGITS})
     model.to(DEVICE)
 
-    ds = StrokeDataset(strokes, labels, kind, seed)
+    ds = StrokeDataset(strokes, labels, kind, seed, prefix_prob)
     loader = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=True, generator=torch.Generator().manual_seed(seed),
                         drop_last=(len(ds) % BATCH_SIZE == 1))
     criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
@@ -353,6 +374,89 @@ def measure_latency_ms(cnn, gru, strokes, runs=30):
 
 
 # ============================================================
+# 조기 예측 평가
+# ============================================================
+def early_scores(models, weight, strokes, y, fractions=EARLY_FRACTIONS):
+    """models: {이름: (kind, model)}, 'cnn'과 'gru' 필수.
+    궤적을 앞에서부터 frac만큼만 남겨 채점 -> {이름: {frac: 지표}}.
+    앙상블은 '자동 입력' 기준(확신도 >= EARLY_AUTO_CONFIDENCE, 자동 입력 제외 기호 아님)으로
+    몇 %가 자동 입력되고(auto_rate) 그중 몇 %가 맞는지(auto_precision)도 계산."""
+    out = {}
+    for frac in fractions:
+        cut = [truncate(s, frac) for s in strokes]
+        probs = {name: predict_proba(m, precompute(kind, cut)) for name, (kind, m) in models.items()}
+        probs["ensemble"] = ensemble(probs["cnn"], probs["gru"], weight)
+        for name, p in probs.items():
+            pred = p.argmax(1)
+            m = compute_metrics(y, pred)
+            if name == "ensemble":
+                auto = (p.max(1) >= EARLY_AUTO_CONFIDENCE) & ~np.isin(pred, NO_AUTO_IDX)
+                m["auto_rate"] = float(auto.mean())
+                m["auto_precision"] = float(np.mean(pred[auto] == y[auto])) if auto.any() else float("nan")
+            out.setdefault(name, {})[frac] = m
+    return out
+
+
+def summarize_early(rows):
+    """rows: {이름: {frac: [fold별 지표, ...]}} -> {이름: {frac: {지표_mean, 지표_std}}}"""
+    summary = {}
+    for name, by_frac in rows.items():
+        summary[name] = {}
+        for frac, ms in by_frac.items():
+            df = pd.DataFrame(ms)
+            summary[name][frac] = {f"{c}_{s}": float(getattr(np, f"nan{s}")(df[c]))
+                                   for c in df.columns if c != "fold" for s in ("mean", "std")}
+    return summary
+
+
+def save_early(summary, title, png_path, csv_path):
+    rows = [{"model": name, "written_pct": int(round(frac * 100)), **m}
+            for name, by_frac in summary.items() for frac, m in by_frac.items()]
+    pd.DataFrame(rows).to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    colors = {"cnn": "#7b8db3", "gru": "#7fb38d", "ensemble": "#d18b5f", "cnn_scratch": "#b0b0b0"}
+    fracs = sorted(next(iter(summary.values())))
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4.2), sharey=True)
+    for ax, (key, sub) in zip(axes, (("accuracy", "All symbols"), ("digit_accuracy", "Digits"),
+                                     ("operator_accuracy", "Operators"))):
+        for name, by_frac in summary.items():
+            x = [f * 100 for f in fracs]
+            mean = np.array([by_frac[f][f"{key}_mean"] for f in fracs])
+            std = np.nan_to_num(np.array([by_frac[f][f"{key}_std"] for f in fracs]))
+            color = colors.get(name, "#555555")
+            ax.plot(x, mean, "o-", color=color, label=name, lw=2.4 if name == "ensemble" else 1.5)
+            ax.fill_between(x, mean - std, mean + std, color=color, alpha=0.12)
+        ax.set_title(sub)
+        ax.set_xlabel("Written so far (% of ink)")
+        ax.set_xticks([f * 100 for f in fracs])
+        ax.set_ylim(0, 1.03)
+        ax.grid(alpha=0.3)
+    axes[0].set_ylabel("Accuracy")
+    axes[0].legend(loc="upper left", fontsize=9)
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(png_path, dpi=150)
+    plt.close(fig)
+
+
+def print_early(summary):
+    fracs = sorted(next(iter(summary.values())))
+    print("조기 예측 정확도: 쓴 비율별 '전체 (숫자/연산자)'")
+    print(" " * 12 + "".join(f"{f'{int(f * 100)}%':>19s}" for f in fracs))
+    for name, by_frac in summary.items():
+        cells = "".join(f"{by_frac[f]['accuracy_mean']:>8.3f} ({by_frac[f]['digit_accuracy_mean']:.2f}/"
+                        f"{by_frac[f]['operator_accuracy_mean']:.2f})" for f in fracs)
+        print(f"{name:12s}{cells}")
+    ens = summary.get("ensemble", {})
+    if ens and "auto_rate_mean" in ens[fracs[0]]:
+        print(f"앙상블 자동 입력 기준 (확신도 >= {EARLY_AUTO_CONFIDENCE:.0%}, {', '.join(EARLY_NO_AUTO)} 제외):")
+        for f in fracs:
+            prec = ens[f]["auto_precision_mean"]
+            print(f"  {int(f * 100):3d}% 썼을 때: {ens[f]['auto_rate_mean']:.0%} 자동 입력, "
+                  f"그중 정답 {'-' if np.isnan(prec) else f'{prec:.0%}'}")
+
+
+# ============================================================
 # 시각화
 # ============================================================
 def plot_confusion(cm, title, path):
@@ -405,6 +509,7 @@ def main():
     parser.add_argument("--ablation", action="store_true", help="MNIST 사전학습 없는 CNN도 학습해 비교")
     parser.add_argument("--no-synthetic", action="store_true", help="합성 연산자를 섞지 않음")
     parser.add_argument("--no-pretrain", action="store_true", help="MNIST 사전학습을 쓰지 않음")
+    parser.add_argument("--no-prefix", action="store_true", help="앞부분 잘라 학습하기를 쓰지 않음 (조기 예측 비교용)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -417,6 +522,7 @@ def main():
     groups, protocol = choose_groups(subjects, sessions)
     pretrained = None if args.no_pretrain else mnist_pretrained(seed=args.seed)
     n_synth = 0 if args.no_synthetic else SYNTHETIC_PER_OPERATOR
+    prefix_prob = 0.0 if args.no_prefix else PREFIX_TRAIN_PROB
 
     model_names = ["cnn", "gru", "ensemble"] + (["cnn_scratch"] if args.ablation else [])
     folds = make_folds(y, groups, args.folds, args.seed)
@@ -424,6 +530,7 @@ def main():
     best_epochs = {"cnn": [], "gru": []}
     weights, records, fold_info = [], [], []
     pooled_true, pooled_pred = [], []
+    early_rows = {}
 
     for k, (train_idx, test_idx) in enumerate(folds, 1):
         print(f"\n=== Fold {k}/{len(folds)}: 시험 = "
@@ -436,12 +543,14 @@ def main():
 
         test_strokes = [strokes[i] for i in test_idx]
         val_strokes = [strokes[i] for i in val_idx] if val_idx is not None else None
-        probs, val_probs = {}, {}
+        probs, val_probs, fitted = {}, {}, {}
         for kind, pre, name in [("cnn", pretrained, "cnn"), ("gru", None, "gru")] + \
                                ([("cnn", None, "cnn_scratch")] if args.ablation else []):
             val_X = precompute(kind, val_strokes) if val_strokes else None
             model, best_epoch = fit(kind, train_strokes, train_y, val_X, y[val_idx] if val_idx is not None else None,
-                                    args.epochs, args.seed + k, pretrained=pre, verbose=args.verbose)
+                                    args.epochs, args.seed + k, pretrained=pre, verbose=args.verbose,
+                                    prefix_prob=prefix_prob)
+            fitted[name] = (kind, model)
             if name in best_epochs:
                 best_epochs[name].append(best_epoch if val_idx is not None else args.epochs)
             probs[name] = predict_proba(model, precompute(kind, test_strokes))
@@ -460,6 +569,13 @@ def main():
             metrics[name] = m
         print("  " + " | ".join(f"{n} macroF1={metrics[n]['macro_f1']:.3f}" for n in model_names)
               + f" | 앙상블 비중 CNN:GRU = {w:.2f}:{1 - w:.2f}")
+
+        early = early_scores(fitted, w, test_strokes, y[test_idx])
+        for name in model_names:
+            for frac, m in early[name].items():
+                early_rows.setdefault(name, {}).setdefault(frac, []).append({**m, "fold": k})
+        print("  조기 예측 (앙상블 정확도): " + " | ".join(
+            f"{int(f * 100)}% {m['accuracy']:.3f}" for f, m in early["ensemble"].items()))
 
         pred_e = probs["ensemble"].argmax(1)
         pooled_true.append(y[test_idx])
@@ -495,6 +611,9 @@ def main():
     cm = confusion_matrix(y_true, y_pred, labels=list(range(NUM_CLASSES)))
     plot_confusion(cm, f"Ensemble (pooled {protocol} CV)", OUTPUT_DIR / "confusion_matrix.png")
     plot_comparison(summary, protocol, OUTPUT_DIR / "model_comparison.png")
+    early_summary = summarize_early(early_rows)
+    save_early(early_summary, f"Early prediction ({protocol} CV)", OUTPUT_DIR / "early_prediction.png",
+               OUTPUT_DIR / "early_prediction.csv")
     pd.DataFrame([{"model": n, **summary[n]} for n in model_names]).to_csv(
         OUTPUT_DIR / "model_comparison.csv", index=False, encoding="utf-8-sig")
 
@@ -507,7 +626,8 @@ def main():
     for kind, pre in (("cnn", pretrained), ("gru", None)):
         epochs = max(10, int(np.median(best_epochs[kind])))
         print(f"\n최종 {kind.upper()} 학습: 실제 {len(y)}개 + 합성 {len(syn_y)}개, {epochs} epoch")
-        finals[kind], _ = fit(kind, all_strokes, all_y, None, None, epochs, args.seed, pretrained=pre)
+        finals[kind], _ = fit(kind, all_strokes, all_y, None, None, epochs, args.seed, pretrained=pre,
+                              prefix_prob=prefix_prob)
         hp = HP[kind]
         save_checkpoint(MODEL_DIR / f"{kind}.pt", finals[kind], {
             "kind": kind, "num_classes": NUM_CLASSES, "classes": CLASSES,
@@ -520,7 +640,8 @@ def main():
         "cnn": "cnn.pt", "gru": "gru.pt", "cnn_weight": final_w, "classes": CLASSES,
         "feature_version": FEATURE_VERSION, "evaluation_protocol": protocol, "cv_folds": len(folds),
         "cv_summary": summary, "fold_weights": weights, "mnist_pretrained": pretrained is not None,
-        "synthetic_per_operator": n_synth, "trained_on_samples": int(len(y)),
+        "synthetic_per_operator": n_synth, "trained_on_samples": int(len(y)), "prefix_train_prob": prefix_prob,
+        "early_prediction": {name: {str(f): m for f, m in by_frac.items()} for name, by_frac in early_summary.items()},
         "cpu_latency_ms_per_symbol": latency, "trained_at": datetime.now().isoformat(timespec="seconds"),
     }
     (MODEL_DIR / "ensemble.json").write_text(json.dumps(info, ensure_ascii=False, indent=2, default=_json_default),
@@ -542,6 +663,9 @@ def main():
         print(f"{name:12s} macro F1 {s['macro_f1_mean']:.3f} ± {s['macro_f1_std']:.3f} | "
               f"숫자 {s['digit_accuracy_mean']:.3f} | 연산자 {s['operator_accuracy_mean']:.3f}")
     print(f"앙상블 비중 CNN:GRU = {final_w:.2f}:{1 - final_w:.2f} | 글자당 CPU {latency:.1f}ms")
+    print()
+    print_early(early_summary)
+    print(f"조기 예측 그래프: {OUTPUT_DIR / 'early_prediction.png'}")
     print(f"\n시험 샘플 확인 페이지: {page}")
     print(f"모델 저장: {MODEL_DIR}/cnn.pt, gru.pt, ensemble.json")
 

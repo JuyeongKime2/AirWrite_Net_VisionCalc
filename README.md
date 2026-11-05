@@ -3,6 +3,7 @@
 웹캠 앞에서 검지로 허공에 숫자와 연산자(+ − × ÷ =)를 쓰면 인식해서 계산하는 프로젝트입니다.
 데이터 수집과 학습은 **내 PC(VS Code)**에서, 완성된 앱은 **Streamlit Community Cloud**에 배포합니다.
 
+https://airwritenetvisioncalc-ke2w9waykhj8lbusbjrdzp.streamlit.app/
 ---
 
 ## 0. 어떻게 동작하나요? (하이브리드 딥러닝)

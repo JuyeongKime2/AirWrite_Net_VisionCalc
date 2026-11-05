@@ -1,15 +1,9 @@
 # App runtime (Streamlit Community Cloud installs this file)
-# For data collection / training on your PC, install requirements-dev.txt
-
-# CPU-only PyTorch (GPU build is too large for the cloud)
 --extra-index-url https://download.pytorch.org/whl/cpu
-
-# mediapipe >= 0.10.30 removed mp.solutions -> must pin
-# 0.10.21 breaks with protobuf >= 5 or numpy >= 2 -> pin both
+# mediapipe >= 0.10.30 removed mp.solutions; 0.10.21 needs protobuf<5 and numpy<2
 mediapipe==0.10.21
 protobuf>=4.25.3,<5
 numpy>=1.26,<2
-
 torch>=2.2,<2.7
 streamlit>=1.40,<2
 streamlit-webrtc>=0.47

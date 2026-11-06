@@ -1,5 +1,11 @@
 # ✍️ 허공 손글씨 계산기
 
+![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)
+![OpenCV](https://img.shields.io/badge/OpenCV-5C3EE8?logo=opencv&logoColor=white)
+![MediaPipe](https://img.shields.io/badge/MediaPipe-0097A7?logo=google&logoColor=white)
+![TensorFlow](https://img.shields.io/badge/TensorFlow-FF6F00?logo=tensorflow&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
+
 웹캠 앞에서 검지로 허공에 숫자와 연산자(+ − × ÷ =)를 쓰면 인식해서 계산하는 프로젝트입니다.
 데이터 수집과 학습은 **내 PC(VS Code)**에서, 완성된 앱은 **Streamlit Community Cloud**에 배포합니다.
 
